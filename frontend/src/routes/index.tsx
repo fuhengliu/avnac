@@ -1,5 +1,4 @@
 import {
-  AiMagicIcon,
   CropIcon,
   FileExportIcon,
   GeometricShapes02Icon,
@@ -8,8 +7,8 @@ import {
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
 import {
-  AnimatePresence,
   motion,
+  useInView,
   useScroll,
   useSpring,
   useTransform,
@@ -19,11 +18,13 @@ import { createFileRoute } from "@tanstack/react-router";
 import {
   useCallback,
   useEffect,
+  useMemo,
   useRef,
   useState,
   type CSSProperties,
 } from "react";
 import { usePostHog } from "posthog-js/react";
+import doodleSvgRaw from "../assets/doodle.svg?raw";
 import NewCanvasDialog from "../components/new-canvas-dialog";
 import { idbListDocuments } from "../lib/avnac-editor-idb";
 
@@ -108,7 +109,6 @@ type EssentialTool = {
   icon: IconSvgElement;
   accent: string;
   accentSoft: string;
-  glow: string;
 };
 
 const essentialTools: EssentialTool[] = [
@@ -118,7 +118,6 @@ const essentialTools: EssentialTool[] = [
     icon: TextBoldIcon,
     accent: "#ef8b74",
     accentSoft: "rgba(239, 139, 116, 0.22)",
-    glow: "rgba(255, 205, 167, 0.58)",
   },
   {
     name: "Shapes",
@@ -126,7 +125,6 @@ const essentialTools: EssentialTool[] = [
     icon: GeometricShapes02Icon,
     accent: "#f0a74b",
     accentSoft: "rgba(240, 167, 75, 0.22)",
-    glow: "rgba(255, 223, 153, 0.55)",
   },
   {
     name: "Images",
@@ -134,7 +132,6 @@ const essentialTools: EssentialTool[] = [
     icon: Image01Icon,
     accent: "#89a36f",
     accentSoft: "rgba(137, 163, 111, 0.2)",
-    glow: "rgba(198, 221, 171, 0.5)",
   },
   {
     name: "Crop",
@@ -142,15 +139,6 @@ const essentialTools: EssentialTool[] = [
     icon: CropIcon,
     accent: "#5d9bc7",
     accentSoft: "rgba(93, 155, 199, 0.2)",
-    glow: "rgba(162, 210, 238, 0.5)",
-  },
-  {
-    name: "Magic",
-    note: "Prompt a first pass or a sharper edit.",
-    icon: AiMagicIcon,
-    accent: "#c47fd7",
-    accentSoft: "rgba(196, 127, 215, 0.2)",
-    glow: "rgba(223, 190, 241, 0.52)",
   },
   {
     name: "Export",
@@ -158,7 +146,30 @@ const essentialTools: EssentialTool[] = [
     icon: FileExportIcon,
     accent: "#f17f8f",
     accentSoft: "rgba(241, 127, 143, 0.18)",
-    glow: "rgba(255, 191, 205, 0.54)",
+  },
+];
+
+const magicPromptExamples = [
+  "Turn this into a bold festival flyer with tighter spacing.",
+  "Rewrite the headline and make the layout feel more editorial.",
+  "Give this poster a softer color story and cleaner rhythm.",
+];
+
+const magicCapabilities = [
+  {
+    label: "First pass",
+    title: "Start from a rough idea.",
+    note: "Drop in a prompt and get a sharper direction before you start nudging the details.",
+  },
+  {
+    label: "Rewrite",
+    title: "Fix the words and the structure.",
+    note: "Ask for punchier copy, better hierarchy, or a cleaner arrangement without leaving the canvas.",
+  },
+  {
+    label: "Refine",
+    title: "Keep iterating in place.",
+    note: "Use Magic to push a layout further instead of starting over every time the vibe is slightly off.",
   },
 ];
 
@@ -211,13 +222,17 @@ function Landing() {
   const [stickers, setStickers] = useState(initialStickers);
   const [activeStickerId, setActiveStickerId] = useState<string | null>(null);
   const [activeToolIndex, setActiveToolIndex] = useState(0);
-  const [toolDirection, setToolDirection] = useState(1);
   const posthog = usePostHog();
   const stickerLayerRef = useRef<HTMLDivElement | null>(null);
   const toolsSectionRef = useRef<HTMLDivElement | null>(null);
+  const vectorsSectionRef = useRef<HTMLElement | null>(null);
   const dragStateRef = useRef<DragState | null>(null);
   const activeToolIndexRef = useRef(0);
   const compactHeroStickerLayout = useCompactHeroStickerLayout();
+  const vectorsInView = useInView(vectorsSectionRef, {
+    once: true,
+    amount: 0.35,
+  });
   const { scrollYProgress } = useScroll({
     target: toolsSectionRef,
     offset: ["start start", "end end"],
@@ -227,18 +242,10 @@ function Landing() {
     damping: 32,
     mass: 0.22,
   });
-  const toolStops = essentialTools.map((_, index) =>
-    index / Math.max(essentialTools.length - 1, 1),
-  );
-  const stageAccentSoft = useTransform(
+  const trackX = useTransform(
     smoothToolsProgress,
-    toolStops,
-    essentialTools.map((tool) => tool.accentSoft),
-  );
-  const stageGlow = useTransform(
-    smoothToolsProgress,
-    toolStops,
-    essentialTools.map((tool) => tool.glow),
+    [0, 1],
+    ["0%", `-${((essentialTools.length - 1) * 100) / essentialTools.length}%`],
   );
 
   useEffect(() => {
@@ -268,7 +275,6 @@ function Landing() {
       return;
     }
     activeToolIndexRef.current = nextIndex;
-    setToolDirection(nextIndex > previousIndex ? 1 : -1);
     setActiveToolIndex(nextIndex);
   });
 
@@ -369,16 +375,38 @@ function Landing() {
     ? "You already have saved work in this browser. Open your files and keep editing."
     : "Avnac is an open canvas for layouts, posters, and graphics.";
   const activeTool = essentialTools[activeToolIndex];
+  const activeToolCount = String(activeToolIndex + 1).padStart(2, "0");
+  const totalToolCount = String(essentialTools.length).padStart(2, "0");
   const toolsShellStyle = {
+    "--tool-count": essentialTools.length,
+    "--tool-accent": activeTool.accent,
     "--tool-accent-soft": activeTool.accentSoft,
-    "--tool-glow": activeTool.glow,
     minHeight: `${essentialTools.length * 68}vh`,
   } as CSSProperties;
-  const toolsMotionStyle = {
-    ...toolsShellStyle,
-    "--tool-accent-soft": stageAccentSoft,
-    "--tool-glow": stageGlow,
-  } as CSSProperties;
+  const doodleMarkup = useMemo(() => {
+    let pathIndex = 0;
+
+    return doodleSvgRaw
+      .replace(/<\?xml[\s\S]*?\?>\s*/g, "")
+      .replace(/<svg\b([^>]*)>/, (_match, attrs) => {
+        const cleanAttrs = attrs
+          .replace(/\swidth="[^"]*"/g, "")
+          .replace(/\sheight="[^"]*"/g, "");
+        const withViewBox = /viewBox=/.test(cleanAttrs)
+          ? cleanAttrs
+          : `${cleanAttrs} viewBox="0 0 1000 1000"`;
+
+        return `<svg${withViewBox}>`;
+      })
+      .replace(
+        /<path\b([^>]*?)fill="([^"]+)"([^>]*)\/>/g,
+        (_match, before, fill, after) => {
+          const nextIndex = pathIndex++;
+
+          return `<path${before}fill="${fill}"${after} pathLength="1" style="--path-index:${nextIndex}; --path-fill:${fill};" />`;
+        },
+      );
+  }, []);
 
   return (
     <main className="landing-page">
@@ -537,103 +565,205 @@ function Landing() {
         </div>
       </section>
 
-      <section className="landing-section landing-section-last">
+      <section className="landing-section">
         <div className="landing-container">
           <motion.div
             ref={toolsSectionRef}
             className="landing-tools-shell"
-            style={toolsMotionStyle}
+            style={toolsShellStyle}
           >
             <div className="landing-tools-sticky">
-              <div className="landing-tools-left">
-                <div className="landing-tools-left-header">
-                  <h2 className="display-title landing-tools-left-title">
-                    All the essential tools
+              <div className="landing-tools-header">
+                <div className="landing-tools-headline">
+                  <h2 className="display-title landing-tools-title">
+                    All the essential tools.
                   </h2>
                 </div>
-                <div className="landing-tools-stage">
-                  <div className="landing-tools-stage-glow" />
-                  <div className="landing-tools-stage-grid" />
-                  <AnimatePresence mode="wait" initial={false}>
-                    <motion.div
-                      key={activeTool.name}
-                      className="landing-tools-single-icon-wrap"
-                      aria-hidden="true"
-                      initial={{
-                        y: toolDirection > 0 ? 70 : -70,
-                        scale: 0.62,
-                        rotate: toolDirection > 0 ? 10 : -10,
-                        opacity: 0.01,
-                      }}
-                      animate={{
-                        y: 0,
-                        scale: 1,
-                        rotate: 0,
-                        opacity: 1,
-                      }}
-                      exit={{
-                        y: toolDirection > 0 ? -50 : 50,
-                        scale: 0.7,
-                        rotate: toolDirection > 0 ? -8 : 8,
-                        opacity: 0.01,
-                      }}
-                      transition={{
-                        y: {
-                          type: "spring",
-                          stiffness: 520,
-                          damping: 30,
-                          mass: 0.62,
-                        },
-                        scale: {
-                          type: "spring",
-                          stiffness: 560,
-                          damping: 24,
-                          mass: 0.52,
-                        },
-                        rotate: {
-                          type: "spring",
-                          stiffness: 540,
-                          damping: 28,
-                          mass: 0.58,
-                        },
-                        opacity: {
-                          duration: 0.08,
-                          ease: "linear",
-                        },
-                      }}
-                    >
-                      <HugeiconsIcon
-                        icon={activeTool.icon}
-                        size={230}
-                        strokeWidth={1.7}
-                        className="landing-tools-single-icon"
-                        style={{ color: activeTool.accent }}
-                      />
-                    </motion.div>
-                  </AnimatePresence>
+
+                <div className="landing-tools-meter" aria-hidden="true">
+                  <span>{activeToolCount}</span>
+                  <div className="landing-tools-meter-bar">
+                    <motion.span
+                      className="landing-tools-meter-fill"
+                      style={{ scaleX: smoothToolsProgress }}
+                    />
+                  </div>
+                  <span>{totalToolCount}</span>
                 </div>
               </div>
 
-              <div className="landing-tools-copy">
-                <div className="landing-tools-list">
-                  {essentialTools.map((tool, index) => (
-                    <article
-                      key={tool.name}
-                      className={`landing-tools-item ${index === activeToolIndex ? "is-active" : ""}`}
-                    >
-                      <span className="landing-tools-count">
-                        {String(index + 1).padStart(2, "0")}
-                      </span>
-                      <div>
-                        <h3>{tool.name}</h3>
-                        <p>{tool.note}</p>
-                      </div>
-                    </article>
-                  ))}
-                </div>
+              <div className="landing-tools-reel-frame" aria-live="polite">
+                <motion.div
+                  className="landing-tools-reel-track"
+                  style={{
+                    width: `${essentialTools.length * 100}%`,
+                    x: trackX,
+                  }}
+                >
+                  {essentialTools.map((tool, index) => {
+                    const isActive = index === activeToolIndex;
+
+                    return (
+                      <article
+                        key={tool.name}
+                        className={`landing-tools-panel ${isActive ? "is-active" : ""}`}
+                        style={
+                          {
+                            "--panel-accent": tool.accent,
+                          } as CSSProperties
+                        }
+                      >
+                        <div className="landing-tools-panel-grid">
+                          <div className="landing-tools-panel-copy">
+                            <span className="landing-tools-panel-count">
+                              {String(index + 1).padStart(2, "0")}
+                            </span>
+                            <h3 className="display-title">{tool.name}</h3>
+                            <p>{tool.note}</p>
+                          </div>
+
+                          <motion.div
+                            className="landing-tools-panel-icon-wrap"
+                            animate={{
+                              scale: isActive ? 1 : 0.88,
+                              rotate: isActive ? 0 : index % 2 === 0 ? -8 : 8,
+                              y: isActive ? 0 : 20,
+                              opacity: isActive ? 1 : 0.7,
+                            }}
+                            transition={{
+                              type: "spring",
+                              stiffness: 360,
+                              damping: 28,
+                            }}
+                          >
+                            <HugeiconsIcon
+                              icon={tool.icon}
+                              size={310}
+                              strokeWidth={1.7}
+                              className="landing-tools-panel-icon"
+                              style={{ color: tool.accent }}
+                            />
+                          </motion.div>
+                        </div>
+                      </article>
+                    );
+                  })}
+                </motion.div>
+              </div>
+
+              <div className="landing-tools-strip" aria-hidden="true">
+                {essentialTools.map((tool, index) => (
+                  <span
+                    key={tool.name}
+                    className={`landing-tools-strip-item ${index === activeToolIndex ? "is-active" : ""}`}
+                  >
+                    {tool.name}
+                  </span>
+                ))}
               </div>
             </div>
           </motion.div>
+        </div>
+      </section>
+
+      <section
+        ref={vectorsSectionRef}
+        className="landing-section landing-vectors-section"
+      >
+        <div className="landing-container">
+          <div className="landing-vectors-shell">
+            <div className="landing-vectors-header">
+              <h2 className="display-title landing-vectors-title">
+                Vectors
+              </h2>
+              <p className="landing-vectors-copy">
+                Every curve stays sharp, editable, and clean as the drawing
+                comes to life.
+              </p>
+            </div>
+
+            <div
+              className={`landing-vectors-stage ${vectorsInView ? "is-visible" : ""}`}
+            >
+              <div className="landing-vectors-paper">
+                <div className="landing-vectors-paper-clip" aria-hidden="true" />
+                <div
+                  className="landing-vectors-doodle"
+                  aria-hidden="true"
+                  dangerouslySetInnerHTML={{ __html: doodleMarkup }}
+                />
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section className="landing-section">
+        <div className="landing-container">
+          <div className="landing-magic-shell">
+            <div className="landing-ai-header">
+              <h2 className="display-title landing-section-title">Magic</h2>
+              <p className="landing-section-copy">
+                Prompt a first pass, rewrite the weak parts, or steer the
+                layout toward a better mood without breaking your flow.
+              </p>
+            </div>
+
+            <div className="landing-magic-grid">
+              <div className="landing-magic-prompt-card">
+                <span className="landing-magic-prompt-label">
+                  Try prompts like
+                </span>
+                <div className="landing-ai-prompt-list">
+                  {magicPromptExamples.map((prompt) => (
+                    <span key={prompt}>{prompt}</span>
+                  ))}
+                </div>
+              </div>
+
+              <div className="landing-magic-card-list">
+                {magicCapabilities.map((item) => (
+                  <article key={item.title} className="landing-magic-card">
+                    <span className="landing-magic-prompt-label">
+                      {item.label}
+                    </span>
+                    <h3>{item.title}</h3>
+                    <p>{item.note}</p>
+                  </article>
+                ))}
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section className="landing-section landing-section-last">
+        <div className="landing-container">
+          <div className="landing-cta-band landing-cta-band-only">
+            <div>
+              <h2 className="display-title landing-cta-title">
+                Start making something.
+              </h2>
+            </div>
+
+            <div className="landing-cta-actions">
+              <button
+                type="button"
+                className="landing-primary-button inline-flex min-h-12 cursor-pointer items-center justify-center rounded-full border-0 px-10 py-3.5 text-base font-medium sm:min-h-14 sm:px-12 sm:py-4 sm:text-[1.0625rem]"
+                onClick={openEditor}
+              >
+                Open editor
+              </button>
+              <a
+                href="https://github.com/akinloluwami/avnac"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex min-h-12 items-center justify-center rounded-full border border-black/[0.14] bg-white/72 px-8 py-3.5 text-base font-medium text-[var(--text)] no-underline backdrop-blur-sm hover:border-black/[0.22] hover:bg-white sm:min-h-14 sm:px-10 sm:py-4 sm:text-[1.0625rem]"
+              >
+                View on GitHub
+              </a>
+            </div>
+          </div>
         </div>
       </section>
 
